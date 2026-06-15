@@ -6,7 +6,7 @@ from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 import os
 
-st.set_page_config(page_title="MK Exams Scheduler", layout="wide")
+st.set_page_config(page_title="M Exams Scheduler", layout="wide")
 
 # Custom CSS for the desktop app design
 st.markdown("""
@@ -20,7 +20,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown("<div class='main-title'>💻 MK Exams Scheduler - Faculty Management System</div>", unsafe_allow_html=True)
+st.markdown("<div class='main-title'>💻 Exams Scheduler - Faculty Of Management & Finance</div>", unsafe_allow_html=True)
 
 # Word Document Generation Function
 def generate_word_report(df, title_text):
@@ -181,7 +181,7 @@ with col_display:
                         <div class="hall-details">
                             <b>Schedule:</b> {date_assigned} ({time_assigned})<br>
                             <b>Subject:</b> {sub_assigned}<br>
-                            <b>Controller:</b> {sup_assigned}<br>
+                            <b>Supervisor:</b> {sup_assigned}<br>
                             <b>Invigilators:</b> {invs_assigned}
                         </div>
                     </div>
