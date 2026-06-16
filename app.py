@@ -62,7 +62,7 @@ except Exception as e:
 # Helper function to load all active data from DB
 def load_all_schedules():
     conn = get_db_connection()
-    df = pd.read_sql("SELECT date AS Date, time AS Time, subject AS Subject, hall AS Hall, supervisor AS Supervisor, invigilators AS Invigilators, semester_key FROM exam_assignments", conn)
+    df = pd.read_sql("SELECT id, date AS Date, time AS Time, subject AS Subject, hall AS Hall, supervisor AS Supervisor, invigilators AS Invigilators, semester_key FROM exam_assignments", conn)
     conn.close()
     return df
 
@@ -78,8 +78,9 @@ def generate_word_report(df, title_text):
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     doc.add_paragraph("\n")
     
-    # Drop semester_key column for clean report if it exists
-    report_df = df.drop(columns=['semester_key']) if 'semester_key' in df.columns else df
+    # Drop internal columns for clean report
+    cols_to_drop = [c for c in ['id', 'semester_key'] if c in df.columns]
+    report_df = df.drop(columns=cols_to_drop) if cols_to_drop else df
     
     table = doc.add_table(rows=1, cols=len(report_df.columns))
     table.style = 'Light Shading Accent 1'
@@ -121,42 +122,79 @@ if not schedule_df.empty:
 
 summary_data = pd.DataFrame(list(duty_counts.items()), columns=['Staff Member', 'Duties']).sort_values(by='Duties', ascending=False)
 
+# ----------------- INITIALIZE SESSION STATE FOR EDIT MODE -----------------
+if "edit_mode" not in st.session_state:
+    st.session_state.edit_mode = False
+    st.session_state.edit_id = None
+    st.session_state.edit_data = {}
+
 # ----------------- LAYOUT SPLIT (SIDEBAR & MAIN) -----------------
 col_control, col_display, col_summary = st.columns([1, 2.2, 0.8])
 
 # COLUMN 1: CONTROLS & ASSIGNMENT (Left Side)
 with col_control:
-    st.markdown("### 🛠️ Control Panel")
+    if st.session_state.edit_mode:
+        st.markdown("### 📝 Edit Mode Active")
+        st.warning(f"Editing Record ID: {st.session_state.edit_id}")
+    else:
+        st.markdown("### 🛠️ Control Panel")
     
-    exam_date = st.date_input("Exam Date", datetime.now())
+    # Date Handling
+    default_date = datetime.now()
+    if st.session_state.edit_mode:
+        try:
+            default_date = datetime.strptime(st.session_state.edit_data['Date'], "%Y-%m-%d")
+        except:
+            pass
+    exam_date = st.date_input("Exam Date", default_date)
     date_str = str(exam_date)
     
-    # Extract Year and Month Name for unique key configuration
     year_str = str(exam_date.year)
-    month_str = exam_date.strftime("%B") # e.g., "June"
+    month_str = exam_date.strftime("%B")
     
-    # Semester Selection Dropdown
-    semester_opt = st.selectbox("Select Semester", ["Sem 1", "Sem 2", "Sem 3"])
+    # Semester Dropdown
+    sem_default_idx = 0
+    if st.session_state.edit_mode and 'semester_key' in st.session_state.edit_data:
+        for idx, opt in enumerate(["Sem 1", "Sem 2", "Sem 3"]):
+            if opt.replace(" ", "") in st.session_state.edit_data['semester_key']:
+                sem_default_idx = idx
+    semester_opt = st.selectbox("Select Semester", ["Sem 1", "Sem 2", "Sem 3"], index=sem_default_idx)
     
-    # Automatically generate your unique partition key string
     generated_semester_key = f"{year_str}-{month_str}-{semester_opt.replace(' ', '')}"
     st.caption(f"Database Partition Key: `{generated_semester_key}`")
     
+    # Time Slots Handling
     start_time = st.time_input("Start Time", time(9, 0))
     end_time = st.time_input("End Time", time(12, 0))
     time_slot = f"{start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')}"
     st.info(f"Slot: {time_slot}")
     
-    selected_sub = st.selectbox("Select Subject", subjects_df['Subject'].tolist())
+    # Subject Selectbox
+    sub_list = subjects_df['Subject'].tolist()
+    sub_default_idx = 0
+    if st.session_state.edit_mode and st.session_state.edit_data['Subject'] in sub_list:
+        sub_default_idx = sub_list.index(st.session_state.edit_data['Subject'])
+    selected_sub = st.selectbox("Select Subject", sub_list, index=sub_default_idx)
     
     st.write("---")
     st.markdown("#### 📍 Assign Duty")
-    selected_hall = st.selectbox("Select Target Hall", halls_df['Hall_Name'].tolist())
     
-    # Clash check logic via live database entries
+    # Hall Selectbox
+    hall_list = halls_df['Hall_Name'].tolist()
+    hall_default_idx = 0
+    if st.session_state.edit_mode and st.session_state.edit_data['Hall'] in hall_list:
+        hall_default_idx = hall_list.index(st.session_state.edit_data['Hall'])
+    selected_hall = st.selectbox("Select Target Hall", hall_list, index=hall_default_idx)
+    
+    # Clash check logic (Skip current editing ID from clash tracking)
     busy_staff = []
     if not schedule_df.empty:
-        current_clashes = schedule_df[(schedule_df['Date'] == date_str) & (schedule_df['Time'] == time_slot)]
+        # Filter out the row we are currently editing so it doesn't clash with itself
+        if st.session_state.edit_mode:
+            current_clashes = schedule_df[(schedule_df['Date'] == date_str) & (schedule_df['Time'] == time_slot) & (schedule_df['id'] != st.session_state.edit_id)]
+        else:
+            current_clashes = schedule_df[(schedule_df['Date'] == date_str) & (schedule_df['Time'] == time_slot)]
+            
         busy_staff += current_clashes['Supervisor'].tolist()
         for inv_list_str in current_clashes['Invigilators'].tolist():
             if pd.notna(inv_list_str) and inv_list_str != "" and inv_list_str != "nan":
@@ -165,38 +203,85 @@ with col_control:
     available_supervisors = staff_df[(staff_df['Role'] == 'Supervisor') & (~staff_df['Name'].isin(busy_staff))]['Name'].tolist()
     available_invigilators = staff_df[(staff_df['Role'] == 'Invigilator') & (~staff_df['Name'].isin(busy_staff))]['Name'].tolist()
 
-    selected_sup = st.selectbox("Controller (Supervisor)", ["-- Select --"] + available_supervisors)
-    selected_invs = st.multiselect("Invigilators", available_invigilators)
+    # Pre-set values if in Edit Mode
+    sup_opts = ["-- Select --"] + available_supervisors
+    if st.session_state.edit_mode and st.session_state.edit_data['Supervisor'] not in sup_opts:
+        sup_opts.append(st.session_state.edit_data['Supervisor']) # Ensure current supervisor is visible
     
-    if st.button("💾 Save Assignment", use_container_width=True, type="primary"):
-        if selected_sup != "-- Select --" and len(selected_invs) > 0:
-            if not schedule_df.empty and not schedule_df[(schedule_df['Date'] == date_str) & (schedule_df['Time'] == time_slot) & (schedule_df['Hall'] == selected_hall)].empty:
-                st.error(f"{selected_hall} is already allocated for this slot!")
+    sup_default_idx = 0
+    if st.session_state.edit_mode and st.session_state.edit_data['Supervisor'] in sup_opts:
+        sup_default_idx = sup_opts.index(st.session_state.edit_data['Supervisor'])
+        
+    selected_sup = st.selectbox("Controller (Supervisor)", sup_opts, index=sup_default_idx)
+    
+    inv_defaults = []
+    if st.session_state.edit_mode and pd.notna(st.session_state.edit_data['Invigilators']):
+        inv_defaults = [x.strip() for x in str(st.session_state.edit_data['Invigilators']).split(",") if x.strip()]
+    
+    # Combine available list with already selected list for rendering
+    total_invs_rendered = list(set(available_invigilators + inv_defaults))
+    selected_invs = st.multiselect("Invigilators", total_invs_rendered, default=inv_defaults)
+    
+    # Form Action Buttons
+    if st.session_state.edit_mode:
+        col_up1, col_up2 = st.columns(2)
+        with col_up1:
+            if st.button("🔄 Update Assignment", use_container_width=True, type="primary"):
+                if selected_sup != "-- Select --" and len(selected_invs) > 0:
+                    invs_string = ", ".join(selected_invs)
+                    try:
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        query = """
+                            UPDATE exam_assignments 
+                            SET semester_key=%s, date=%s, time=%s, subject=%s, hall=%s, supervisor=%s, invigilators=%s
+                            WHERE id=%s
+                        """
+                        cursor.execute(query, (generated_semester_key, date_str, time_slot, selected_sub, selected_hall, selected_sup, invs_string, st.session_state.edit_id))
+                        cursor.close()
+                        conn.close()
+                        
+                        st.success("Updated successfully!")
+                        st.session_state.edit_mode = False
+                        st.session_state.edit_id = None
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(f"DB Update Error: {ex}")
+                else:
+                    st.error("Select both Controller and Invigilators.")
+        with col_up2:
+            if st.button("❌ Cancel Edit", use_container_width=True):
+                st.session_state.edit_mode = False
+                st.session_state.edit_id = None
+                st.rerun()
+    else:
+        if st.button("💾 Save Assignment", use_container_width=True, type="primary"):
+            if selected_sup != "-- Select --" and len(selected_invs) > 0:
+                if not schedule_df.empty and not schedule_df[(schedule_df['Date'] == date_str) & (schedule_df['Time'] == time_slot) & (schedule_df['Hall'] == selected_hall)].empty:
+                    st.error(f"{selected_hall} is already allocated for this slot!")
+                else:
+                    invs_string = ", ".join(selected_invs)
+                    try:
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        query = """
+                            INSERT INTO exam_assignments (semester_key, date, time, subject, hall, supervisor, invigilators)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """
+                        cursor.execute(query, (generated_semester_key, date_str, time_slot, selected_sub, selected_hall, selected_sup, invs_string))
+                        cursor.close()
+                        conn.close()
+                        
+                        st.success("Saved securely to Cloud Database!")
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(f"DB Insert Error: {ex}")
             else:
-                invs_string = ", ".join(selected_invs)
+                st.error("Select both Controller and Invigilators.")
                 
-                try:
-                    conn = get_db_connection()
-                    cursor = conn.cursor()
-                    query = """
-                        INSERT INTO exam_assignments (semester_key, date, time, subject, hall, supervisor, invigilators)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    """
-                    cursor.execute(query, (generated_semester_key, date_str, time_slot, selected_sub, selected_hall, selected_sup, invs_string))
-                    cursor.close()
-                    conn.close()
-                    
-                    st.success("Saved securely to Cloud MySQL database!")
-                    st.rerun()
-                except Exception as ex:
-                    st.error(f"DB Insert Error: {ex}")
-        else:
-            st.error("Select both Controller and Invigilators.")
-            
     st.write("---")
     st.markdown("#### 📥 Current Roster Report")
     
-    # Roster output directly mapped from the database snapshot
     if not schedule_df.empty:
         file_path = generate_word_report(schedule_df, "EXAMINATION DUTY ROSTER")
         with open(file_path, "rb") as file:
@@ -257,23 +342,48 @@ with col_summary:
     st.dataframe(summary_data, use_container_width=True, hide_index=True, height=520)
 
 st.write("---")
-# ----------------- HISTORICAL DATABASE SEARCH VIEW PANEL -----------------
-st.markdown("### 🔍 Historical Semester Archives Look-up Panel")
+
+# ----------------- LIVE DATA EDITOR PANEL (NEW FEATURE) -----------------
+st.markdown("### 📝 Active Assignments Management Panel (Live Editor)")
 if not schedule_df.empty:
-    unique_keys = sorted(schedule_df['semester_key'].dropna().unique())
-    selected_archive_key = st.selectbox("Select Historical Key Block to Fetch", unique_keys)
+    st.caption("Here are all the live entries stored inside the database. Use the action buttons below to fix entry errors.")
     
-    filtered_history = schedule_df[schedule_df['semester_key'] == selected_archive_key]
-    
-    st.dataframe(filtered_history.drop(columns=['semester_key']), use_container_width=True, hide_index=True)
-    
-    history_file_path = generate_word_report(filtered_history, f"EXAMINATION DUTY ROSTER - ARCHIVE [{selected_archive_key}]")
-    with open(history_file_path, "rb") as file_hist:
-        st.download_button(
-            label=f"📥 Download Word Report for {selected_archive_key}",
-            data=file_hist,
-            file_name=f"Archive_Exam_Roster_{selected_archive_key}.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        )
+    for index, row in schedule_df.iterrows():
+        # Create visual rows inside an expander layout
+        with st.container():
+            r_col1, r_col2, r_col3, r_col4, r_col5 = st.columns([1.2, 1.2, 1.5, 2.5, 1.2])
+            with r_col1:
+                st.write(f"📅 **{row['Date']}**")
+                st.caption(f"ID: {row['id']} | {row['semester_key']}")
+            with r_col2:
+                st.write(f"⏰ {row['Time']}")
+            with r_col3:
+                st.write(f"🏢 {row['Hall']}")
+                st.caption(f"📚 {row['Subject']}")
+            with r_col4:
+                st.write(f"👤 **Sup:** {row['Supervisor']}")
+                st.write(f"👥 **Invs:** {row['Invigilators']}")
+            with r_col5:
+                # Add Action Buttons side by side
+                btn_col1, btn_col2 = st.columns(2)
+                with btn_col1:
+                    if st.button("✏️ Edit", key=f"edit_{row['id']}", use_container_width=True):
+                        st.session_state.edit_mode = True
+                        st.session_state.edit_id = int(row['id'])
+                        st.session_state.edit_data = row.to_dict()
+                        st.rerun()
+                with btn_col2:
+                    if st.button("🗑️", key=f"del_{row['id']}", use_container_width=True, help="Delete assignment"):
+                        try:
+                            conn = get_db_connection()
+                            cursor = conn.cursor()
+                            cursor.execute("DELETE FROM exam_assignments WHERE id=%s", (int(row['id']),))
+                            cursor.close()
+                            conn.close()
+                            st.toast(f"Record {row['id']} Deleted!", icon="🗑️")
+                            st.rerun()
+                        except Exception as ex:
+                            st.error(f"Error deleting: {ex}")
+            st.markdown("<hr style='margin:0.5em 0px; border-color:#E2E8F0;'/>", unsafe_allow_html=True)
 else:
-    st.info("No saved records inside the database yet to display logs.")
+    st.info("No active logs stored in the database yet.")
