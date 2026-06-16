@@ -5,8 +5,9 @@ import docx
 from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 import os
+import pymysql
 
-st.set_page_config(page_title="M Exams Scheduler", layout="wide")
+st.set_page_config(page_title="Exams Scheduler", layout="wide")
 
 # Custom CSS for the desktop app design
 st.markdown("""
@@ -22,6 +23,51 @@ st.markdown("""
 
 st.markdown("<div class='main-title'>💻 Exams Scheduler - Faculty Of Management & Finance</div>", unsafe_allow_html=True)
 
+# ----------------- DATABASE CONNECTION -----------------
+def get_db_connection():
+    return pymysql.connect(
+        host=st.secrets["mysql"]["host"],
+        port=int(st.secrets["mysql"]["port"]),
+        database=st.secrets["mysql"]["database"],
+        user=st.secrets["mysql"]["user"],
+        password=st.secrets["mysql"]["password"],
+        autocommit=True
+    )
+
+# Create table if it doesn't exist
+def init_db():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS exam_assignments (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            semester_key VARCHAR(50),
+            date VARCHAR(20),
+            time VARCHAR(50),
+            subject VARCHAR(255),
+            hall VARCHAR(255),
+            supervisor VARCHAR(255),
+            invigilators TEXT
+        )
+    """)
+    cursor.close()
+    conn.close()
+
+try:
+    init_db()
+except Exception as e:
+    st.error(f"Database Connection/Initialization Error: {e}")
+    st.stop()
+
+# Helper function to load all active data from DB
+def load_all_schedules():
+    conn = get_db_connection()
+    df = pd.read_sql("SELECT date AS Date, time AS Time, subject AS Subject, hall AS Hall, supervisor AS Supervisor, invigilators AS Invigilators, semester_key FROM exam_assignments", conn)
+    conn.close()
+    return df
+
+schedule_df = load_all_schedules()
+
 # Word Document Generation Function
 def generate_word_report(df, title_text):
     doc = docx.Document()
@@ -32,35 +78,32 @@ def generate_word_report(df, title_text):
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     doc.add_paragraph("\n")
     
-    table = doc.add_table(rows=1, cols=len(df.columns))
+    # Drop semester_key column for clean report if it exists
+    report_df = df.drop(columns=['semester_key']) if 'semester_key' in df.columns else df
+    
+    table = doc.add_table(rows=1, cols=len(report_df.columns))
     table.style = 'Light Shading Accent 1'
     hdr_cells = table.rows[0].cells
-    for i, col_name in enumerate(df.columns):
+    for i, col_name in enumerate(report_df.columns):
         hdr_cells[i].text = str(col_name)
         hdr_cells[i].paragraphs[0].runs[0].font.bold = True
         
-    for index, row in df.iterrows():
+    for index, row in report_df.iterrows():
         row_cells = table.add_row().cells
-        for i, column in enumerate(df.columns):
+        for i, column in enumerate(report_df.columns):
             row_cells[i].text = str(row[column])
             
     filename = "Exam_Duty_Roster_Report.docx"
     doc.save(filename)
     return filename
 
-# ----------------- LOAD EXCEL DATA -----------------
+# ----------------- LOAD EXCEL DATA (STAFF, HALLS, SUBJECTS) -----------------
 try:
     staff_df = pd.read_excel("staff_list.xlsx")
     halls_df = pd.read_excel("halls_list.xlsx")
     subjects_df = pd.read_excel("subjects_list.xlsx")
-    if os.path.exists("current_schedule.xlsx") and os.path.getsize("current_schedule.xlsx") > 0:
-        schedule_df = pd.read_excel("current_schedule.xlsx")
-        schedule_df['Date'] = schedule_df['Date'].astype(str)
-        schedule_df['Invigilators'] = schedule_df['Invigilators'].astype(str)
-    else:
-        schedule_df = pd.DataFrame(columns=['Date', 'Time', 'Subject', 'Hall', 'Supervisor', 'Invigilators'])
 except Exception as e:
-    st.error(f"Excel Data Load Error: {e}")
+    st.error(f"Excel Static Data Load Error: {e}")
     st.stop()
 
 # ----------------- LIVE CALCULATIONS (LOAD SUMMARY) -----------------
@@ -88,6 +131,17 @@ with col_control:
     exam_date = st.date_input("Exam Date", datetime.now())
     date_str = str(exam_date)
     
+    # Extract Year and Month Name for unique key configuration
+    year_str = str(exam_date.year)
+    month_str = exam_date.strftime("%B") # e.g., "June"
+    
+    # Semester Selection Dropdown
+    semester_opt = st.selectbox("Select Semester", ["Sem 1", "Sem 2", "Sem 3"])
+    
+    # Automatically generate your unique partition key string
+    generated_semester_key = f"{year_str}-{month_str}-{semester_opt.replace(' ', '')}"
+    st.caption(f"Database Partition Key: `{generated_semester_key}`")
+    
     start_time = st.time_input("Start Time", time(9, 0))
     end_time = st.time_input("End Time", time(12, 0))
     time_slot = f"{start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')}"
@@ -99,7 +153,7 @@ with col_control:
     st.markdown("#### 📍 Assign Duty")
     selected_hall = st.selectbox("Select Target Hall", halls_df['Hall_Name'].tolist())
     
-    # Clash check logic for the selected slot
+    # Clash check logic via live database entries
     busy_staff = []
     if not schedule_df.empty:
         current_clashes = schedule_df[(schedule_df['Date'] == date_str) & (schedule_df['Time'] == time_slot)]
@@ -120,41 +174,41 @@ with col_control:
                 st.error(f"{selected_hall} is already allocated for this slot!")
             else:
                 invs_string = ", ".join(selected_invs)
-                new_row = {
-                    'Date': date_str, 'Time': time_slot, 'Subject': selected_sub, 
-                    'Hall': selected_hall, 'Supervisor': selected_sup, 'Invigilators': invs_string
-                }
+                
                 try:
-                    schedule_df = pd.concat([schedule_df, pd.DataFrame([new_row])], ignore_index=True)
-                    schedule_df.to_excel("current_schedule.xlsx", index=False)
-                    st.success("Saved successfully!")
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    query = """
+                        INSERT INTO exam_assignments (semester_key, date, time, subject, hall, supervisor, invigilators)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """
+                    cursor.execute(query, (generated_semester_key, date_str, time_slot, selected_sub, selected_hall, selected_sup, invs_string))
+                    cursor.close()
+                    conn.close()
+                    
+                    st.success("Saved securely to Cloud MySQL database!")
                     st.rerun()
-                except PermissionError:
-                    st.error("Close current_schedule.xlsx first!")
+                except Exception as ex:
+                    st.error(f"DB Insert Error: {ex}")
         else:
             st.error("Select both Controller and Invigilators.")
             
     st.write("---")
-    st.markdown("#### 📥 Reports & Reset")
+    st.markdown("#### 📥 Current Roster Report")
     
-    # Word Report Button added to Control Panel
+    # Roster output directly mapped from the database snapshot
     if not schedule_df.empty:
         file_path = generate_word_report(schedule_df, "EXAMINATION DUTY ROSTER")
         with open(file_path, "rb") as file:
             st.download_button(
                 label="📥 Download Word Report",
                 data=file,
-                file_name="Faculty_Exam_Roster.docx",
+                file_name=f"Faculty_Exam_Roster_{generated_semester_key}.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 use_container_width=True
             )
     else:
         st.button("📥 Download Word Report", disabled=True, use_container_width=True)
-            
-    if st.button("🗑️ Clean All Schedule", type="secondary", use_container_width=True):
-        schedule_df = pd.DataFrame(columns=['Date', 'Time', 'Subject', 'Hall', 'Supervisor', 'Invigilators'])
-        schedule_df.to_excel("current_schedule.xlsx", index=False)
-        st.rerun()
 
 # COLUMN 2: VISUAL HALL BOXES / CARDS (Middle)
 with col_display:
@@ -200,4 +254,26 @@ with col_display:
 with col_summary:
     st.markdown("### 📊 Summary")
     st.markdown("<div class='summary-title'>Load Summary</div>", unsafe_allow_html=True)
-    st.dataframe(summary_data, use_container_width=True, hide_index=True, height=550)
+    st.dataframe(summary_data, use_container_width=True, hide_index=True, height=520)
+
+st.write("---")
+# ----------------- HISTORICAL DATABASE SEARCH VIEW PANEL -----------------
+st.markdown("### 🔍 Historical Semester Archives Look-up Panel")
+if not schedule_df.empty:
+    unique_keys = sorted(schedule_df['semester_key'].dropna().unique())
+    selected_archive_key = st.selectbox("Select Historical Key Block to Fetch", unique_keys)
+    
+    filtered_history = schedule_df[schedule_df['semester_key'] == selected_archive_key]
+    
+    st.dataframe(filtered_history.drop(columns=['semester_key']), use_container_width=True, hide_index=True)
+    
+    history_file_path = generate_word_report(filtered_history, f"EXAMINATION DUTY ROSTER - ARCHIVE [{selected_archive_key}]")
+    with open(history_file_path, "rb") as file_hist:
+        st.download_button(
+            label=f"📥 Download Word Report for {selected_archive_key}",
+            data=file_hist,
+            file_name=f"Archive_Exam_Roster_{selected_archive_key}.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+else:
+    st.info("No saved records inside the database yet to display logs.")
