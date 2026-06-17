@@ -95,7 +95,7 @@ def generate_word_report(df, title_text):
     report_df = df.drop(columns=cols_to_drop) if cols_to_drop else df
     
     table = doc.add_table(rows=1, cols=len(report_df.columns))
-    table.style = 'Light Shading Accent 1'
+    table.style = 'Table Grid'
     hdr_cells = table.rows[0].cells
     for i, col_name in enumerate(report_df.columns):
         hdr_cells[i].text = str(col_name)
