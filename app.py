@@ -233,7 +233,7 @@ with col_control:
     except ValueError:
         sup_default_idx = 0
         
-    selected_sup = st.selectbox("Controller (Supervisor)", sup_opts, index=sup_default_idx, key=state_key_sup)
+    selected_sup = st.selectbox("Supervisor", sup_opts, index=sup_default_idx, key=state_key_sup)
     
     # 2. FILTER INVIGILATORS LIST: Exclude whoever is currently highlighted inside Supervisor dropdown
     selected_sup_currently = st.session_state[state_key_sup]
