@@ -18,6 +18,17 @@ st.markdown("""
     .hall-details { font-size: 13px; color: #334155; line-height: 1.6; }
     .sidebar-section { background-color: #F8FAFC; padding: 15px; border-radius: 5px; border: 1px solid #E2E8F0; margin-bottom: 15px; }
     .summary-title { font-size: 15px; font-weight: bold; color: #0F172A; margin-bottom: 10px; border-bottom: 1px solid #CBD5E1; }
+    
+    /* 🌟 Force Hand Pointer Symbol on all Dropdowns, Inputs, and Selections */
+    div[data-baseweb="select"] { cursor: pointer !important; }
+    div[data-baseweb="select"] * { cursor: pointer !important; }
+    
+    /* Force Hand Pointer on Date and Time Input Fields */
+    div[data-testid="stDateInput"] input { cursor: pointer !important; }
+    div[data-testid="stTimeInput"] input { cursor: pointer !important; }
+    
+    /* Force Hand Pointer on all clickable buttons */
+    button { cursor: pointer !important; }
     </style>
 """, unsafe_allow_html=True)
 
