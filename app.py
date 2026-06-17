@@ -31,7 +31,8 @@ def get_db_connection():
         database=st.secrets["mysql"]["database"],
         user=st.secrets["mysql"]["user"],
         password=st.secrets["mysql"]["password"],
-        autocommit=True
+        autocommit=True,
+        connect_timeout=10
     )
 
 # Create table if it doesn't exist
@@ -107,8 +108,11 @@ except Exception as e:
     st.error(f"Excel Static Data Load Error: {e}")
     st.stop()
 
+# Get total unique list of names from Excel (No matching role columns required)
+all_staff_names = staff_df['Name'].dropna().unique().tolist()
+
 # ----------------- LIVE CALCULATIONS (LOAD SUMMARY) -----------------
-duty_counts = {name: 0 for name in staff_df['Name'].tolist()}
+duty_counts = {name: 0 for name in all_staff_names}
 if not schedule_df.empty:
     for _, row in schedule_df.iterrows():
         sup = row['Supervisor']
@@ -186,41 +190,60 @@ with col_control:
         hall_default_idx = hall_list.index(st.session_state.edit_data['Hall'])
     selected_hall = st.selectbox("Select Target Hall", hall_list, index=hall_default_idx)
     
-    # Clash check logic (Skip current editing ID from clash tracking)
-    busy_staff = []
+    # Clash check logic (Tracks who is already working in OTHER halls at this time)
+    busy_staff_other_halls = []
     if not schedule_df.empty:
-        # Filter out the row we are currently editing so it doesn't clash with itself
         if st.session_state.edit_mode:
             current_clashes = schedule_df[(schedule_df['Date'] == date_str) & (schedule_df['Time'] == time_slot) & (schedule_df['id'] != st.session_state.edit_id)]
         else:
             current_clashes = schedule_df[(schedule_df['Date'] == date_str) & (schedule_df['Time'] == time_slot)]
             
-        busy_staff += current_clashes['Supervisor'].tolist()
+        busy_staff_other_halls += current_clashes['Supervisor'].tolist()
         for inv_list_str in current_clashes['Invigilators'].tolist():
             if pd.notna(inv_list_str) and inv_list_str != "" and inv_list_str != "nan":
-                busy_staff += [n.strip() for n in inv_list_str.split(",")]
+                busy_staff_other_halls += [n.strip() for n in inv_list_str.split(",")]
 
-    available_supervisors = staff_df[(staff_df['Role'] == 'Supervisor') & (~staff_df['Name'].isin(busy_staff))]['Name'].tolist()
-    available_invigilators = staff_df[(staff_df['Role'] == 'Invigilator') & (~staff_df['Name'].isin(busy_staff))]['Name'].tolist()
+    # Base available pool for this specific time slot
+    available_pool = [name for name in all_staff_names if name not in busy_staff_other_halls]
 
-    # Pre-set values if in Edit Mode
-    sup_opts = ["-- Select --"] + available_supervisors
+    # Create dynamic widget keys to force refresh state smoothly across slot changes
+    state_key_sup = f"input_sup_{date_str}_{time_slot.replace(' ', '')}_{selected_hall}"
+    state_key_inv = f"input_inv_{date_str}_{time_slot.replace(' ', '')}_{selected_hall}"
+    
+    if state_key_sup not in st.session_state:
+        st.session_state[state_key_sup] = "-- Select --"
+        if st.session_state.edit_mode:
+            st.session_state[state_key_sup] = st.session_state.edit_data['Supervisor']
+            
+    if state_key_inv not in st.session_state:
+        st.session_state[state_key_inv] = []
+        if st.session_state.edit_mode and pd.notna(st.session_state.edit_data['Invigilators']):
+            st.session_state[state_key_inv] = [x.strip() for x in str(st.session_state.edit_data['Invigilators']).split(",") if x.strip()]
+
+    # 1. FILTER SUPERVISOR LIST: Exclude whoever is currently highlighted inside Invigilators dropdown
+    selected_invs_currently = st.session_state[state_key_inv]
+    filtered_supervisors = [name for name in available_pool if name not in selected_invs_currently]
+    
+    sup_opts = ["-- Select --"] + filtered_supervisors
     if st.session_state.edit_mode and st.session_state.edit_data['Supervisor'] not in sup_opts:
-        sup_opts.append(st.session_state.edit_data['Supervisor']) # Ensure current supervisor is visible
+        sup_opts.append(st.session_state.edit_data['Supervisor'])
     
-    sup_default_idx = 0
-    if st.session_state.edit_mode and st.session_state.edit_data['Supervisor'] in sup_opts:
-        sup_default_idx = sup_opts.index(st.session_state.edit_data['Supervisor'])
+    try:
+        sup_default_idx = sup_opts.index(st.session_state[state_key_sup])
+    except ValueError:
+        sup_default_idx = 0
         
-    selected_sup = st.selectbox("Controller (Supervisor)", sup_opts, index=sup_default_idx)
+    selected_sup = st.selectbox("Controller (Supervisor)", sup_opts, index=sup_default_idx, key=state_key_sup)
     
-    inv_defaults = []
-    if st.session_state.edit_mode and pd.notna(st.session_state.edit_data['Invigilators']):
-        inv_defaults = [x.strip() for x in str(st.session_state.edit_data['Invigilators']).split(",") if x.strip()]
+    # 2. FILTER INVIGILATORS LIST: Exclude whoever is currently highlighted inside Supervisor dropdown
+    selected_sup_currently = st.session_state[state_key_sup]
+    filtered_invigilators = [name for name in available_pool if name != selected_sup_currently]
     
-    # Combine available list with already selected list for rendering
-    total_invs_rendered = list(set(available_invigilators + inv_defaults))
-    selected_invs = st.multiselect("Invigilators", total_invs_rendered, default=inv_defaults)
+    inv_opts = filtered_invigilators
+    if st.session_state.edit_mode:
+        inv_opts = list(set(inv_opts + st.session_state[state_key_inv]))
+        
+    selected_invs = st.multiselect("Invigilators", inv_opts, key=state_key_inv)
     
     # Form Action Buttons
     if st.session_state.edit_mode:
@@ -272,7 +295,7 @@ with col_control:
                         cursor.close()
                         conn.close()
                         
-                        st.success("Saved securely to Cloud Database!")
+                        st.success("Saved securely to Database!")
                         st.rerun()
                     except Exception as ex:
                         st.error(f"DB Insert Error: {ex}")
@@ -343,13 +366,12 @@ with col_summary:
 
 st.write("---")
 
-# ----------------- LIVE DATA EDITOR PANEL (NEW FEATURE) -----------------
+# ----------------- LIVE DATA EDITOR PANEL -----------------
 st.markdown("### 📝 Active Assignments Management Panel (Live Editor)")
 if not schedule_df.empty:
     st.caption("Here are all the live entries stored inside the database. Use the action buttons below to fix entry errors.")
     
     for index, row in schedule_df.iterrows():
-        # Create visual rows inside an expander layout
         with st.container():
             r_col1, r_col2, r_col3, r_col4, r_col5 = st.columns([1.2, 1.2, 1.5, 2.5, 1.2])
             with r_col1:
@@ -364,13 +386,18 @@ if not schedule_df.empty:
                 st.write(f"👤 **Sup:** {row['Supervisor']}")
                 st.write(f"👥 **Invs:** {row['Invigilators']}")
             with r_col5:
-                # Add Action Buttons side by side
                 btn_col1, btn_col2 = st.columns(2)
                 with btn_col1:
                     if st.button("✏️ Edit", key=f"edit_{row['id']}", use_container_width=True):
                         st.session_state.edit_mode = True
                         st.session_state.edit_id = int(row['id'])
                         st.session_state.edit_data = row.to_dict()
+                        
+                        # Synchronize current active slot key formats for cross-widget rendering
+                        s_key_sup = f"input_sup_{row['Date']}_{row['Time'].replace(' ', '')}_{row['Hall']}"
+                        s_key_inv = f"input_inv_{row['Date']}_{row['Time'].replace(' ', '')}_{row['Hall']}"
+                        st.session_state[s_key_sup] = row['Supervisor']
+                        st.session_state[s_key_inv] = [x.strip() for x in str(row['Invigilators']).split(",") if x.strip()]
                         st.rerun()
                 with btn_col2:
                     if st.button("🗑️", key=f"del_{row['id']}", use_container_width=True, help="Delete assignment"):
