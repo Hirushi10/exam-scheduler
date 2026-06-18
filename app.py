@@ -22,15 +22,11 @@ st.markdown("""
     .badge-danger { font-size: 11px; font-weight: bold; background-color: #EF4444; color: #FFFFFF; padding: 3px 6px; border-radius: 4px; float: right; }
     .badge-success { font-size: 11px; font-weight: bold; background-color: #10B981; color: #FFFFFF; padding: 3px 6px; border-radius: 4px; float: right; }
     
-    /* Force Hand Pointer Symbol on all Dropdowns, Inputs, and Selections */
+    /* Force Hand Pointer Symbol on Dropdowns, Inputs, and Selections */
     div[data-baseweb="select"] { cursor: pointer !important; }
     div[data-baseweb="select"] * { cursor: pointer !important; }
-    
-    /* Force Hand Pointer on Date and Time Input Fields */
     div[data-testid="stDateInput"] input { cursor: pointer !important; }
     div[data-testid="stTimeInput"] input { cursor: pointer !important; }
-    
-    /* Force Hand Pointer on all clickable buttons */
     button { cursor: pointer !important; }
     </style>
 """, unsafe_allow_html=True)
@@ -49,7 +45,6 @@ def get_db_connection():
         connect_timeout=10
     )
 
-# Create table and upgrade structure if it doesn't exist
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -66,10 +61,8 @@ def init_db():
         )
     """)
     
-    # Structural Check: Ensure the student_count schema parameter column is attached
     cursor.execute("SHOW COLUMNS FROM exam_assignments LIKE 'student_count'")
-    result = cursor.fetchone()
-    if not result:
+    if not cursor.fetchone():
         cursor.execute("ALTER TABLE exam_assignments ADD COLUMN student_count INT DEFAULT 0")
         
     cursor.close()
@@ -78,10 +71,71 @@ def init_db():
 try:
     init_db()
 except Exception as e:
-    st.error(f"Database Connection/Initialization Error: {e}")
+    st.error(f"Database Initialization Error: {e}")
     st.stop()
 
-# Helper function to load all active data from DB
 def load_all_schedules():
     conn = get_db_connection()
-    df = pd.read_sql("SELECT id, date AS Date, time AS Time, subject AS Subject, hall AS Hall, supervisor AS Supervisor, invigilators AS Invigil
+    # 🌟 FIXED: The string literal below is closed cleanly without trailing breaks
+    query = "SELECT id, date AS Date, time AS Time, subject AS Subject, hall AS Hall, supervisor AS Supervisor, invigilators AS Invigilators, semester_key, student_count FROM exam_assignments"
+    df = pd.read_sql(query, conn)
+    conn.close()
+    return df
+
+schedule_df = load_all_schedules()
+
+# Word Document Generation Function
+def generate_word_report(df, title_text):
+    doc = docx.Document()
+    title = doc.add_paragraph()
+    title_run = title.add_run(f"UNIVERSITY OF RUHUNA\nFaculty of Management and Finance\n{title_text}")
+    title_run.bold = True
+    title_run.font.size = Pt(14)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    doc.add_paragraph("\n")
+    
+    cols_to_drop = [c for c in ['id', 'semester_key'] if c in df.columns]
+    report_df = df.drop(columns=cols_to_drop) if cols_to_drop else df
+    
+    table = doc.add_table(rows=1, cols=len(report_df.columns))
+    table.style = 'Table Grid'
+    hdr_cells = table.rows[0].cells
+    for i, col_name in enumerate(report_df.columns):
+        hdr_cells[i].text = str(col_name)
+        hdr_cells[i].paragraphs[0].runs[0].font.bold = True
+        
+    for index, row in report_df.iterrows():
+        row_cells = table.add_row().cells
+        for i, column in enumerate(report_df.columns):
+            row_cells[i].text = str(row[column])
+            
+    filename = "Exam_Duty_Roster_Report.docx"
+    doc.save(filename)
+    return filename
+
+# ----------------- LOAD EXCEL DATA (STAFF, HALLS, SUBJECTS) -----------------
+try:
+    staff_df = pd.read_excel("staff_list.xlsx")
+    halls_df = pd.read_excel("halls_list.xlsx")
+    subjects_df = pd.read_excel("subjects_list.xlsx")
+except Exception as e:
+    st.error(f"Excel Static Data Load Error: {e}")
+    st.stop()
+
+all_staff_names = staff_df['Name'].dropna().unique().tolist()
+
+hall_capacities = {}
+for _, row in halls_df.iterrows():
+    if pd.notna(row.iloc[0]):
+        h_name = str(row.iloc[0]).strip()
+        h_cap = int(row.iloc[1]) if len(row) > 1 and pd.notna(row.iloc[1]) else "N/A"
+        hall_capacities[h_name] = h_cap
+
+# ----------------- LIVE CALCULATIONS (LOAD SUMMARY) -----------------
+duty_counts = {name: 0 for name in all_staff_names}
+if not schedule_df.empty:
+    for _, row in schedule_df.iterrows():
+        sup = row['Supervisor']
+        if sup in duty_counts:
+            duty_counts[sup] += 1
+        invs_str = str(row
