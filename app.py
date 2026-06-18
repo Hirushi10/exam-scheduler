@@ -105,7 +105,6 @@ def generate_word_report(df, title_text):
         
     for index, row in report_df.iterrows():
         row_cells = table.add_row().cells
-        # 🌟 FIXED: The inner data cell enumeration array population is cleanly closed
         for i, column in enumerate(report_df.columns):
             row_cells[i].text = str(row[column])
             
@@ -167,7 +166,12 @@ with col_control:
             default_date = datetime.strptime(st.session_state.edit_data['Date'], "%Y-%m-%d")
         except:
             pass
-    exam_date = st.date_input("Exam Date", default_date)
+            
+    # 🌟 Real-time updates handler callback function
+    def instant_refresh():
+        pass
+
+    exam_date = st.date_input("Exam Date", default_date, on_change=instant_refresh)
     date_str = str(exam_date)
     
     year_str = str(exam_date.year)
@@ -178,13 +182,13 @@ with col_control:
         for idx, opt in enumerate(["Sem 1", "Sem 2", "Sem 3"]):
             if opt.replace(" ", "") in st.session_state.edit_data['semester_key']:
                 sem_default_idx = idx
-    semester_opt = st.selectbox("Select Semester", ["Sem 1", "Sem 2", "Sem 3"], index=sem_default_idx)
+    semester_opt = st.selectbox("Select Semester", ["Sem 1", "Sem 2", "Sem 3"], index=sem_default_idx, on_change=instant_refresh)
     
     generated_semester_key = f"{year_str}-{month_str}-{semester_opt.replace(' ', '')}"
     st.caption(f"Database Partition Key: `{generated_semester_key}`")
     
-    start_time = st.time_input("Start Time", time(9, 0))
-    end_time = st.time_input("End Time", time(12, 0))
+    start_time = st.time_input("Start Time", time(9, 0), on_change=instant_refresh)
+    end_time = st.time_input("End Time", time(12, 0), on_change=instant_refresh)
     time_slot = f"{start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')}"
     st.info(f"Slot: {time_slot}")
     
@@ -192,12 +196,12 @@ with col_control:
     sub_default_idx = 0
     if st.session_state.edit_mode and st.session_state.edit_data['Subject'] in sub_list:
         sub_default_idx = sub_list.index(st.session_state.edit_data['Subject'])
-    selected_sub = st.selectbox("Select Subject", sub_list, index=sub_default_idx)
+    selected_sub = st.selectbox("Select Subject", sub_list, index=sub_default_idx, on_change=instant_refresh)
     
     default_students = 0
     if st.session_state.edit_mode and 'student_count' in st.session_state.edit_data:
         default_students = int(st.session_state.edit_data['student_count'])
-    expected_students = st.number_input("Expected Student Count", min_value=0, value=default_students, step=1)
+    expected_students = st.number_input("Expected Student Count", min_value=0, value=default_students, step=1, on_change=instant_refresh)
     
     st.write("---")
     st.markdown("#### 📍 Assign Duty")
@@ -206,7 +210,7 @@ with col_control:
     hall_default_idx = 0
     if st.session_state.edit_mode and st.session_state.edit_data['Hall'] in hall_list:
         hall_default_idx = hall_list.index(st.session_state.edit_data['Hall'])
-    selected_hall = st.selectbox("Select Target Hall", hall_list, index=hall_default_idx)
+    selected_hall = st.selectbox("Select Target Hall", hall_list, index=hall_default_idx, on_change=instant_refresh)
     
     busy_staff_other_halls = []
     if not schedule_df.empty:
@@ -238,14 +242,14 @@ with col_control:
         sup_opts.append(target_sup_val)
     
     sup_default_idx = sup_opts.index(target_sup_val) if target_sup_val in sup_opts else 0
-    selected_sup = st.selectbox("Supervisor", sup_opts, index=sup_default_idx, key=state_key_sup)
+    selected_sup = st.selectbox("Supervisor", sup_opts, index=sup_default_idx, key=state_key_sup, on_change=instant_refresh)
     
     filtered_invigilators = [name for name in available_pool if name != selected_sup]
     inv_opts = filtered_invigilators
     if st.session_state.edit_mode:
         inv_opts = list(set(inv_opts + target_inv_val))
         
-    selected_invs = st.multiselect("Invigilators", inv_opts, default=[x for x in target_inv_val if x in inv_opts], key=state_key_inv)
+    selected_invs = st.multiselect("Invigilators", inv_opts, default=[x for x in target_inv_val if x in inv_opts], key=state_key_inv, on_change=instant_refresh)
     
     if st.session_state.edit_mode:
         col_up1, col_up2 = st.columns(2)
