@@ -93,4 +93,17 @@ def generate_word_report(df, title_text):
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     doc.add_paragraph("\n")
     
-    cols_to_drop =
+    # 🌟 FIXED: The variable assignment below is now cleanly closed and structured
+    cols_to_drop = [c for c in ['id', 'semester_key'] if c in df.columns]
+    report_df = df.drop(columns=cols_to_drop) if cols_to_drop else df
+    
+    table = doc.add_table(rows=1, cols=len(report_df.columns))
+    table.style = 'Table Grid'
+    hdr_cells = table.rows[0].cells
+    for i, col_name in enumerate(report_df.columns):
+        hdr_cells[i].text = str(col_name)
+        hdr_cells[i].paragraphs[0].runs[0].font.bold = True
+        
+    for index, row in report_df.iterrows():
+        row_cells = table.add_row().cells
+        for i, column in
